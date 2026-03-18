@@ -588,9 +588,9 @@ db.warehouse.aggregate([
 
 | Stufe | Status | Inhalt |
 |---|---|---|
-| Grundlagen | ✅ Vollständig | MongoDB, Spring Boot, REST API, Shell-Operationen, Fragestellungen |
-| Erweiterte Grundlagen | ✅ Vollständig | Multi-Warehouse, alle 8 REST-Endpunkte, Datengenerator |
-| Vertiefung | ✅ Vollständig | 300 Produkte, 6 Kategorien, 3 Reporting-Abfragen, KI-Integration |
+| Grundlagen |  Vollständig | MongoDB, Spring Boot, REST API, Shell-Operationen, Fragestellungen |
+| Erweiterte Grundlagen |  Vollständig | Multi-Warehouse, alle 8 REST-Endpunkte, Datengenerator |
+| Vertiefung |  Vollständig | 300 Produkte, 6 Kategorien, 3 Reporting-Abfragen, KI-Integration |
 
 ### 10.2 Technische Erkenntnisse
 
