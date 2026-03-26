@@ -1,4 +1,10 @@
-application.properties
-.env
+.gradle/
+.settings/
+.project
+.classpath
+.factorypath
+bin/
 build/
-build/
+target/
+.DS_Store
+src/main/resources/application.properties
