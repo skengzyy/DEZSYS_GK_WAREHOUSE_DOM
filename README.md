@@ -27,6 +27,7 @@ Die Applikation wurde von Grund auf auf einem Arch Linux System mit Neovim als E
 - Automatische Datengenerierung: 5 Lagerstandorte, 300 Produkte, 6 Kategorien
 - Mongo Shell CRUD-Operationen und Reporting-Abfragen
 - KI-Integration via Groq API (Llama 3.3) zur automatischen Berichterstellung
+- Web-Dashboard zur visuellen Verwaltung der Daten
 
 ---
 
@@ -49,6 +50,8 @@ sudo usermod -aG docker $USER
 export JAVA_HOME=/usr/lib/jvm/java-21-openjdk
 export PATH=$JAVA_HOME/bin:$PATH
 # Permanent in ~/.zshrc eingetragen
+echo 'export JAVA_HOME=/usr/lib/jvm/java-21-openjdk' >> ~/.zshrc
+echo 'export PATH=$JAVA_HOME/bin:$PATH' >> ~/.zshrc
 ```
 
 ### 2.2 MongoDB via Docker
@@ -63,7 +66,7 @@ docker exec -it mongo mongosh
 
 **Problem:** Der erste Verbindungsversuch mit `mongosh` schlug fehl (`ECONNREFUSED`), weil mongosh auf dem Host-System ausgeführt wurde, nicht innerhalb des Containers.
 
-**Lösung:** mongosh immer via `docker exec -it mongo mongosh` ausführen.
+**Lösung:** mongosh immer via `docker exec -it mongo mongosh` ausführen. Innerhalb des Containers ist MongoDB unter `127.0.0.1:27017` erreichbar, vom Host aus jedoch erst nach vollständiger Container-Initialisierung.
 
 Verifikation im mongosh:
 ```js
@@ -85,7 +88,7 @@ chmod +x gradlew
 
 ### 3.1 JSON-Datenstruktur
 
-Die Entscheidung fiel auf ein eingebettetes Dokumentenmodell: Produkte werden direkt im Warehouse-Dokument als Array gespeichert. Dies ermöglicht einen einzelnen Lesezugriff ohne JOIN-Operationen.
+Die Entscheidung fiel auf ein eingebettetes Dokumentenmodell: Produkte werden direkt im Warehouse-Dokument als Array gespeichert. Dies ermöglicht einen einzelnen Lesezugriff ohne JOIN-Operationen. Die Dokumentgröße beträgt ca. 12 KB pro Lagerhaus (60 Produkte × ~200 Bytes), weit unter dem MongoDB-Limit von 16 MB.
 
 ```json
 {
@@ -114,19 +117,20 @@ Die Entscheidung fiel auf ein eingebettetes Dokumentenmodell: Produkte werden di
 src/main/java/warehouse/
 ├── Application.java
 ├── model/
-│   ├── WarehouseData.java     (@Document)
-│   └── ProductData.java       (eingebettetes Objekt)
+│   ├── WarehouseData.java      (@Document)
+│   └── ProductData.java        (eingebettetes Objekt)
 ├── repository/
 │   └── WarehouseRepository.java
 ├── service/
 │   ├── WarehouseService.java
-│   └── GeminiService.java     (Groq AI)
+│   └── GeminiService.java      (Groq AI)
 ├── controller/
 │   ├── WarehouseController.java
 │   ├── ProductController.java
-│   └── ReportController.java
+│   ├── ReportController.java
+│   └── UiController.java       (Web Dashboard)
 └── generator/
-    └── DataGenerator.java     (CommandLineRunner)
+    └── DataGenerator.java      (CommandLineRunner)
 ```
 
 ### 3.3 Wichtige Modell-Klassen
@@ -179,18 +183,21 @@ gemini.api.key=<GROQ_API_KEY>
 | DELETE | /warehouse/{id} | Lagerstandort löschen |
 | POST | /product?warehouseID= | Produkt zu Lagerstandort hinzufügen |
 | GET | /product | Alle Produkte aller Standorte |
-| GET | /product/{id} | Produkt nach ID + Lagerstandorte |
+| GET | /product/{id} | Lagerstandorte mit Produkt nach ID |
 | DELETE | /product/{id}?warehouseID= | Produkt von Standort löschen |
 | GET | /report/stock | KI-Bericht: Gesamtlagerbestand |
 | GET | /report/lowstock | KI-Bericht: Kritisch niedrige Bestände |
 | GET | /report/value | KI-Bericht: Lagerwert pro Standort |
+| GET | /ui | Web-Dashboard |
 
 ### 4.2 Testdurchführung
 
 ```bash
 # Warehouse erstellen
-http POST localhost:8080/warehouse warehouseID=WH-001 \
-  warehouseName='Wien Zentrum' warehouseCity=Wien
+http POST localhost:8080/warehouse \
+  warehouseID="WH-001" warehouseName="Wien Zentrum" \
+  warehouseCity="Wien" warehousePostalCode="1010" \
+  warehouseCountry="Austria"
 
 # Alle Warehouses abrufen
 http GET localhost:8080/warehouse
@@ -204,13 +211,27 @@ http GET localhost:8080/product | python3 -c \
 # Ausgabe: 300 products
 ```
 
+**Ausgabe GET /warehouse/WH-003:**
+```json
+{
+    "id": "69baa...",
+    "warehouseID": "WH-003",
+    "warehouseName": "Linz Bahnhof",
+    "warehouseCity": "Linz",
+    "warehousePostalCode": "4010",
+    "warehouseCountry": "Austria",
+    "timestamp": "2026-03-18T14:20:03",
+    "productData": [ ... 60 Produkte ... ]
+}
+```
+
 ---
 
 ## 5. Datengenerator (Phase 4)
 
 ### 5.1 Beschreibung
 
-Der `DataGenerator` implementiert `CommandLineRunner` und wird automatisch beim Start der Applikation ausgeführt. Er prüft, ob bereits Daten vorhanden sind (idempotent), und generiert andernfalls 5 Lagerstandorte mit je 60 Produkten aus 6 Kategorien.
+Der `DataGenerator` implementiert `CommandLineRunner` und wird automatisch beim Start der Applikation ausgeführt — nach vollständiger Initialisierung des Spring-Kontexts. Er prüft zuerst, ob bereits Daten vorhanden sind (idempotent), und generiert andernfalls 5 Lagerstandorte mit je 60 Produkten aus 6 Kategorien.
 
 ### 5.2 Generierte Datenmenge
 
@@ -243,7 +264,7 @@ Der `DataGenerator` implementiert `CommandLineRunner` und wird automatisch beim 
 
 **Ursache:** Die Datei wurde versehentlich im falschen Repository (`DEZSYS_GK73_WAREHOUSE_MOM` statt `DEZSYS_GK_WAREHOUSE_DOM`) erstellt.
 
-**Lösung:** Datei im korrekten Verzeichnis neu erstellt. Auf Lombok-Annotation `@RequiredArgsConstructor` verzichtet und stattdessen expliziten Konstruktor verwendet, da das `final Random`-Feld keinen Spring-Bean darstellte.
+**Lösung:** Datei im korrekten Verzeichnis neu erstellt. Auf Lombok-Annotation `@RequiredArgsConstructor` verzichtet und stattdessen expliziten Konstruktor verwendet, da das `final Random`-Feld keinen Spring-Bean darstellte und Lombok dadurch keinen korrekten Konstruktor erzeugen konnte.
 
 ---
 
@@ -300,6 +321,8 @@ db.warehouse.updateOne(
   { $set: { "productData.$.productQuantity": 9999 } }
 )
 ```
+
+Der Positionsoperator `$` referenziert das erste Array-Element, das den Filterbedingungen entspricht.
 
 Ergebnis: `{ acknowledged: true, matchedCount: 1, modifiedCount: 1 }`
 
@@ -413,7 +436,50 @@ Die KI-Integration verwendet die Groq API mit dem Modell `llama-3.3-70b-versatil
 | Authentifizierung | Bearer Token (API Key) |
 | Protokoll | OpenAI-kompatibles REST API |
 
-### 7.2 Gesendete Prompts an die KI
+### 7.2 GeminiService.java (vereinfacht)
+
+```java
+@Service
+public class GeminiService {
+
+    private final WebClient webClient;
+    private final String apiKey;
+
+    public GeminiService(@Value("${gemini.api.key}") String apiKey) {
+        this.apiKey = apiKey;
+        this.webClient = WebClient.builder()
+            .baseUrl("https://api.groq.com")
+            .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
+            .build();
+    }
+
+    public String generateReport(String prompt) {
+        try {
+            Map<String, Object> body = Map.of(
+                "model", "llama-3.3-70b-versatile",
+                "messages", List.of(Map.of("role", "user", "content", prompt))
+            );
+            Map response = webClient.post()
+                .uri("/openai/v1/chat/completions")
+                .header("Authorization", "Bearer " + apiKey)
+                .contentType(MediaType.APPLICATION_JSON)
+                .bodyValue(body)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            List choices = (List) response.get("choices");
+            Map message = (Map) ((Map) choices.get(0)).get("message");
+            return (String) message.get("content");
+        } catch (WebClientResponseException e) {
+            return "API Error " + e.getStatusCode() + ": " + e.getResponseBodyAsString();
+        } catch (Exception e) {
+            return "Error: " + e.getMessage();
+        }
+    }
+}
+```
+
+### 7.3 Gesendete Prompts an die KI
 
 #### Prompt 1 – Gesamtlagerbestand (GET /report/stock)
 
@@ -455,7 +521,7 @@ Wien Zentrum: €129535.22
 ... [alle Standorte]
 ```
 
-### 7.3 KI-Antworten
+### 7.4 KI-Antworten
 
 #### Antwort zu Prompt 1 (Lagerbestand)
 
@@ -469,17 +535,80 @@ Wien Zentrum: €129535.22
 
 > **Lagerhaus-Analyse:** Der Gesamtlagerwert beträgt etwa €575.766. Wien Zentrum weist mit €129.535,22 den höchsten Wert auf. Strategische Empfehlung: Der Fokus sollte auf Wien Zentrum liegen, da es den höchsten Lagerwert aufweist. Ein Ausbau dieses Standorts könnte zu weiteren Wachstumsmöglichkeiten führen.
 
-### 7.4 Aufgetretene Probleme
+### 7.5 Aufgetretene Probleme
 
-**Problem 1:** xAI (Grok) API – 403 Forbidden. Das neu erstellte Team hatte keine Credits.
-**Lösung:** Wechsel zu Groq (kostenlos, OpenAI-kompatibel).
+**Problem 1:** xAI (Grok) API lieferte 403 Forbidden. Das neu erstellte Team hatte keine Credits.
 
-**Problem 2:** `WebClientResponseException` nicht abgefangen — App lieferte nur `500 Internal Server Error`.
-**Lösung:** try-catch Block ergänzt, Fehler wird als lesbarer Text im JSON zurückgegeben.
+**Lösung:** Wechsel zu Groq (kostenlos, OpenAI-kompatibel). Da Groq dasselbe API-Format wie OpenAI verwendet, war lediglich die Base-URL und das Modell zu ändern — keine strukturellen Code-Änderungen nötig.
+
+**Problem 2:** `WebClientResponseException` nicht abgefangen — die App lieferte nur `500 Internal Server Error` ohne verwertbare Fehlermeldung.
+
+**Lösung:** try-catch Block ergänzt; der tatsächliche API-Fehler wird nun als lesbarer Text im JSON zurückgegeben.
 
 ---
 
-## 8. Beantwortung der Fragestellungen
+## 8. Web-Dashboard (Phase Vertiefung)
+
+### 8.1 Beschreibung
+
+Das Web-Dashboard ist unter `http://localhost:8080/ui` erreichbar und bietet eine vollständige grafische Oberfläche zur Verwaltung und Auswertung der Lagerdaten. Es wurde als einzelner Java-String in `UiController.java` implementiert — ohne separates Frontend-Build-System. Die Kommunikation mit dem Backend erfolgt ausschließlich via `fetch()` gegen die bestehenden REST-Endpunkte.
+
+### 8.2 UiController.java
+
+```java
+@Controller
+public class UiController {
+
+    @GetMapping("/ui")
+    @ResponseBody
+    public String ui() {
+        return """
+        <!DOCTYPE html>
+        <html lang="de">
+        ...
+        </html>
+        """;
+    }
+}
+```
+
+### 8.3 Funktionsumfang
+
+Das Dashboard besteht aus drei Tabs:
+
+| Tab | Inhalt |
+|---|---|
+| Lagerstandorte | Karten pro Lagerhaus mit Produktanzahl und Kategorie-Badges |
+| Alle Produkte | Durchsuchbare und filterbare Tabelle mit 300 Produkten |
+| KI Berichte | On-Demand-Abruf aller drei KI-Reports direkt im Browser |
+
+**Lagerstandorte-Tab:** Jeder Standort wird als Karte dargestellt mit Name, ID, Stadt, PLZ und einer Übersicht der Produktkategorien als farbige Badges (z.B. Getränke 10, Waschmittel 10 usw.).
+
+**Produkte-Tab:** Die Tabelle zeigt alle 300 Produkte mit Name, Kategorie, Lagerstandort, Menge, Einheit und Preis. Über ein Suchfeld kann nach Produktname oder Kategorie gefiltert werden. Zusätzlich sind Schnellfilter-Buttons für jede der 6 Kategorien vorhanden. Der Lagerbestand wird farbkodiert dargestellt:
+
+| Farbe | Bestand |
+|---|---|
+| Rot | unter 50 Einheiten (kritisch) |
+| Orange | unter 100 Einheiten (niedrig) |
+| Grün | 100 und mehr Einheiten (normal) |
+
+**KI-Berichte-Tab:** Über drei Buttons können die KI-Reports einzeln oder alle auf einmal abgerufen werden. Die Antworten von Groq werden direkt im Browser angezeigt, ohne Seitenneuladen.
+
+**Statistik-Leiste:** Im oberen Bereich werden vier Kennzahlen in Echtzeit angezeigt: Anzahl der Lagerstandorte, Gesamtproduktanzahl, Anzahl der Kategorien sowie die Anzahl der Produkte mit kritischem Bestand (unter 50 Einheiten).
+
+### 8.4 Technische Details
+
+```
+Browser  →  fetch('/warehouse')   →  WarehouseController
+         →  fetch('/product')     →  ProductController
+         →  fetch('/report/...')  →  ReportController → Groq API
+```
+
+Die gesamte UI-Logik ist in reinem JavaScript ohne externe Bibliotheken implementiert. Daten werden beim Laden des Dashboards parallel via `Promise.all` von `/warehouse` und `/product` abgerufen. Das Zuordnen von Produkten zu Lagerhäusern (für die Standort-Spalte in der Produkttabelle) erfolgt clientseitig über eine Map nach `productID`.
+
+---
+
+## 9. Beantwortung der Fragestellungen
 
 **F1: Nennen Sie 4 Vorteile eines NoSQL Repository im Gegensatz zu einem relationalen DBMS**
 
@@ -501,7 +630,7 @@ Wien Zentrum: €129535.22
 
 **F3: Welche Schwierigkeiten ergeben sich bei der Zusammenführung der Daten?**
 
-Keine JOINs möglich — Zusammenführung muss per `$lookup` (Aggregation Pipeline) oder im Applikationscode erfolgen. Redundante Datenhaltung: dieselben Produktdaten können in mehreren Warehouse-Dokumenten vorkommen. Bei Namensänderungen eines Produkts muss der Wert in allen Dokumenten aktualisiert werden. Unterschiedliche Zeitstempel und Datenformate der Standorte müssen normalisiert werden.
+Keine JOINs möglich — Zusammenführung muss per `$lookup` (Aggregation Pipeline) oder im Applikationscode erfolgen. Redundante Datenhaltung: dieselben Produktdaten können in mehreren Warehouse-Dokumenten vorkommen. Bei Namensänderungen eines Produkts muss der Wert in allen Dokumenten mit `updateMany` aktualisiert werden. Unterschiedliche Zeitstempel und Datenformate der Standorte müssen normalisiert werden.
 
 ---
 
@@ -530,7 +659,7 @@ Das CAP Theorem besagt, dass ein verteiltes System nur 2 von 3 Eigenschaften gle
 - **CP** (Consistency + Partition Tolerance): Daten immer konsistent, auch bei Netzwerkausfall — aber System kann temporär nicht verfügbar sein. Beispiel: MongoDB, HBase.
 - **AP** (Availability + Partition Tolerance): System bleibt immer verfügbar, auch bei Partitionierung — aber Daten können kurzzeitig inkonsistent sein (eventual consistency). Beispiel: CouchDB, Cassandra.
 
-MongoDB ist **CP**.
+MongoDB ist **CP**: Bei einem Netzwerkausfall zwischen Replica-Set-Nodes stoppt der Primary Schreiboperationen, anstatt inkonsistente Daten zu riskieren.
 
 ---
 
@@ -567,7 +696,7 @@ db.warehouse.aggregate([
 
 ---
 
-## 9. Aufgetretene Probleme und Lösungen
+## 10. Aufgetretene Probleme und Lösungen
 
 | Problem | Ursache | Lösung |
 |---|---|---|
@@ -582,45 +711,45 @@ db.warehouse.aggregate([
 
 ---
 
-## 10. Zusammenfassung und Fazit
+## 11. Zusammenfassung und Fazit
 
-### 10.1 Erreichter Bewertungsstand
+### 11.1 Erreichter Bewertungsstand
 
 | Stufe | Status | Inhalt |
 |---|---|---|
-| Grundlagen |  Vollständig | MongoDB, Spring Boot, REST API, Shell-Operationen, Fragestellungen |
-| Erweiterte Grundlagen |  Vollständig | Multi-Warehouse, alle 8 REST-Endpunkte, Datengenerator |
-| Vertiefung |  Vollständig | 300 Produkte, 6 Kategorien, 3 Reporting-Abfragen, KI-Integration |
+| Grundlagen | Vollständig | MongoDB, Spring Boot, REST API, Shell-Operationen, Fragestellungen |
+| Erweiterte Grundlagen | Vollständig | Multi-Warehouse, alle 8 REST-Endpunkte, Datengenerator |
+| Vertiefung | Vollständig | 300 Produkte, 6 Kategorien, 3 Reporting-Abfragen, KI-Integration, Web-Dashboard |
 
-### 10.2 Technische Erkenntnisse
+### 11.2 Technische Erkenntnisse
 
 - Eingebettete Dokumente sind ideal für 1:N-Beziehungen, wo die N-Seite immer gemeinsam mit dem Parent gelesen wird.
 - `$unwind` ist notwendig, um auf Felder in eingebetteten Arrays zu filtern und zu aggregieren — ohne `$unwind` werden Arrays als Ganzes behandelt.
-- `CommandLineRunner` wird nach dem Start des HTTP-Servers ausgeführt — Requests können bereits eingehen während der Generator läuft.
+- `CommandLineRunner` wird nach dem Start des HTTP-Servers ausgeführt — Requests können bereits eingehen, während der Generator läuft.
 - Spring Data MongoDB generiert Repository-Methoden automatisch aus dem Methodennamen (z.B. `findByWarehouseID`).
 - Das CAP Theorem ist kein absolutes Limit — MongoDB wählt CP, bietet aber mit `readPreference` und `writeConcern` feingranulare Kontrolle über den Konsistenz-Verfügbarkeits-Tradeoff.
 
-### 10.3 Systemübersicht
+### 11.3 Systemübersicht
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Spring Boot App :8080               │
-│                                                  │
-│  WarehouseController  ProductController          │
-│         └──────────────────┘                    │
-│              WarehouseService                    │
-│                    │                             │
-│         WarehouseRepository (MongoDB)            │
-│                                                  │
-│  ReportController → GeminiService → Groq API    │
-└────────────────────┬────────────────────────────┘
-                     │
-          ┌──────────▼──────────┐
-          │  MongoDB :27017      │
-          │  (Docker Container)  │
-          │  warehousedb         │
-          │  collection: warehouse│
-          └──────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                  Spring Boot App :8080                  │
+│                                                         │
+│  WarehouseController  ProductController  UiController   │
+│         └──────────────────┘                           │
+│                   WarehouseService                      │
+│                         │                              │
+│          WarehouseRepository (Spring Data MongoDB)      │
+│                                                         │
+│  ReportController  →  GeminiService  →  Groq API        │
+└────────────────────────┬────────────────────────────────┘
+                         │
+              ┌──────────▼──────────┐
+              │   MongoDB :27017    │
+              │  (Docker Container) │
+              │     warehousedb     │
+              │  collection: warehouse│
+              └─────────────────────┘
 ```
 
 ---
