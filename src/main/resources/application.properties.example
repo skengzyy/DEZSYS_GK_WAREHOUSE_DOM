@@ -1,0 +1,6 @@
+spring.application.name=warehouse-dom
+spring.data.mongodb.host=localhost
+spring.data.mongodb.port=27017
+spring.data.mongodb.database=warehousedb
+server.port=8080
+gemini.api.key=YOUR_API_KEY
